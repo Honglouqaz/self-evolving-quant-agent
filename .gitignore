@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 敏感文件
+.env
+*.pem
+*.key
+*_token*
+*token*.json
+*.db
+*.jsonl
+*.log
+
+# 数据
+data/
+output/
+logs/
