@@ -2,9 +2,18 @@
 
 > 生产级 · 真实资金运行 · 数据驱动进化的 AI Agent 架构
 
+[![Python](https://img.shields.io/badge/Python-3.13-3572A5?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![AI Agent](https://img.shields.io/badge/AI-Agent-22d3ee.svg)](#)
+[![Quant Trading](https://img.shields.io/badge/Quant-Trading-34d399.svg)](#)
+[![Multi-Agent](https://img.shields.io/badge/Multi-Agent-a78bfa.svg)](#)
+[![Memory System](https://img.shields.io/badge/Memory-System-fbbf24.svg)](#)
+[![Self-Evolving](https://img.shields.io/badge/Self-Evolving-fb7185.svg)](#)
+[![GitHub stars](https://img.shields.io/github/stars/Honglouqaz/self-evolving-quant-agent.svg?style=social)](https://github.com/Honglouqaz/self-evolving-quant-agent)
+
 一套**自进化的多智能体交易系统**，以三大量化交易子系统为业务载体，构建了"采集 → 分析 → 决策 → 执行 → 复盘 → 进化"的完整闭环。系统从静态规则出发，通过**决策记忆 + 监督层 + 参数自适应**逐步实现数据驱动进化。
 
-![架构](docs/architecture.png)
+![架构](docs/architecture.html)
 
 ## ✨ 核心特性
 
