@@ -68,10 +68,11 @@ def _fetch_vision(symbol: str, interval: str, days: int) -> pd.DataFrame:
                 parts = line.split(",")
                 if len(parts) < 6:
                     continue
-                try:
-                    rows.append(parts[:6])
-                except Exception:
+                # ★新版 Vision CSV 首行带表头 "open_time,open,high,..."，
+                #   老版本无表头 ⇒ 统一用「首字段是否纯数字」判断，别只看行号。
+                if not parts[0].strip().lstrip("-").isdigit():
                     continue
+                rows.append(parts[:6])
             got_days += 1
         except Exception:
             continue
