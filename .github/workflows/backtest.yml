@@ -1,0 +1,76 @@
+name: backtest
+
+# 研究型回测跑在 GitHub Actions（公开仓库免费无限）
+# 关键优势：runner 在境外，可直连 Binance API，不需要任何代理
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: '标的（逗号分隔，如 BTCUSDT,ETHUSDT）'
+        required: true
+        default: 'BTCUSDT,ETHUSDT,SOLUSDT'
+      interval:
+        description: '周期'
+        required: true
+        default: '5m'
+        type: choice
+        options: ['1m','5m','15m','30m','1h','4h','1d']
+      days:
+        description: '回溯天数'
+        required: true
+        default: '30'
+      strategy:
+        description: '策略'
+        required: true
+        default: 'ma_cross'
+        type: choice
+        options: ['ma_cross','rsi_revert','breakout','donchian']
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas numpy
+
+      - name: 连通性自检（证明 runner 可直连 Binance）
+        run: |
+          echo "=== fapi ping ==="
+          curl -s --max-time 20 -o /dev/null -w "HTTP %{http_code}  %{time_total}s\n" https://fapi.binance.com/fapi/v1/ping
+          echo "=== 拉 2 根 K 线验证 ==="
+          curl -s --max-time 20 "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=2"
+
+      - name: 跑回测
+        env:
+          SYMBOLS: ${{ inputs.symbols }}
+          INTERVAL: ${{ inputs.interval }}
+          DAYS: ${{ inputs.days }}
+          STRATEGY: ${{ inputs.strategy }}
+        run: |
+          python backtest/fetch_and_backtest.py \
+            --symbols "$SYMBOLS" --interval "$INTERVAL" \
+            --days "$DAYS" --strategy "$STRATEGY" \
+            --out result.json
+
+      - name: 显示结果
+        run: |
+          echo "===== 回测结果 ====="
+          cat result.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backtest-result-${{ github.run_id }}
+          path: |
+            result.json
+            data/*.csv
+          retention-days: 7
