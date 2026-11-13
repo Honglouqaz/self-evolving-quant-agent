@@ -33,26 +33,149 @@ FEE_PER_SIDE = 0.0004   # taker 0.04%
 SLIP_PER_SIDE = 0.0002  # 0.02%
 
 
+def _fetch_vision(symbol: str, interval: str, days: int) -> pd.DataFrame:
+    """从 data.binance.vision 下载官方历史数据（每日 zip）。
+
+    ★为什么用这个而不直接打 API：
+      2026-11-13 实测 GitHub Actions runner 落在 San Jose/US（Azure），
+      Binance 按合规条款对该地区返回 HTTP 451（fapi/api/api1/api2 全部 451）。
+      但 data.binance.vision 这个官方历史数据站**不做地区封锁**，
+      实测 daily zip 200/13.7KB、monthly 200/390KB、spot 200/15.5KB。
+      ⇒ 这是 Actions 环境下唯一「与实盘同源且能取到」的方案。
+
+    数据延迟：当日数据要等 UTC 收盘后约 1-2 小时才生成，故默认回溯到昨天为止。
+    """
+    import io
+    import zipfile
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    rows = []
+    got_days = 0
+    for back in range(days, 0, -1):
+        d = today - timedelta(days=back)
+        date_s = d.strftime("%Y-%m-%d")
+        url = (f"https://data.binance.vision/data/futures/um/daily/klines/"
+               f"{symbol}/{interval}/{symbol}-{interval}-{date_s}.zip")
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code != 200:
+                continue
+            zf = zipfile.ZipFile(io.BytesIO(r.content))
+            name = zf.namelist()[0]
+            raw = zf.read(name).decode("utf-8", errors="ignore")
+            for line in raw.strip().split("\n"):
+                parts = line.split(",")
+                if len(parts) < 6:
+                    continue
+                try:
+                    rows.append(parts[:6])
+                except Exception:
+                    continue
+            got_days += 1
+        except Exception:
+            continue
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=["ts","open","high","low","close","volume"])
+    # Vision 的 open_time 是毫秒（部分老数据是微秒）
+    ts = df["ts"].astype("int64")
+    if ts.max() > 10**16:
+        ts = ts // 1000
+    df["ts"] = pd.to_datetime(ts, unit="ms", utc=True)
+    for c in ("open","high","low","close","volume"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna().drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
+    df.attrs["source"] = f"binance-vision ({got_days} 天)"
+    return df
+
+
+def _fetch_okx(symbol: str, interval: str, days: int) -> pd.DataFrame:
+    """OKX 兜底（Actions 实测 200 可用）。symbol 需转 BTCUSDT → BTC-USDT。"""
+    bar_map = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1H","4h":"4H","1d":"1D"}
+    bar = bar_map.get(interval, "5m")
+    inst = symbol.replace("USDT", "-USDT")
+    step = INTERVAL_MS[interval]
+    end = int(time.time() * 1000)
+    start = end - days * 86_400_000
+    rows = []
+    cur = start
+    while cur < end:
+        try:
+            r = requests.get("https://www.okx.com/api/v5/market/history-candles",
+                             params={"instId": inst, "bar": bar, "after": end, "limit": 100},
+                             timeout=20)
+            data = (r.json() or {}).get("data") or []
+        except Exception:
+            break
+        if not data:
+            break
+        for k in data:
+            rows.append([int(k[0]), k[1], k[2], k[3], k[4], k[5]])
+        oldest = int(data[-1][0])
+        if oldest <= start:
+            break
+        end = oldest
+        if len(rows) > 20000:
+            break
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=["ts","open","high","low","close","volume"])
+    df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+    for c in ("open","high","low","close","volume"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna().drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
+    df.attrs["source"] = "okx"
+    return df
+
+
 def fetch_klines(symbol: str, interval: str, days: int) -> pd.DataFrame:
-    """分页拉取 K 线。返回 DataFrame[ts, open, high, low, close, volume]。"""
+    """三级取数：Binance Vision（官方历史，Actions 可用）
+                → Binance API（本地走代理时可用）
+                → OKX（兜底）。
+    """
+    # ① Binance 官方历史数据站
+    try:
+        df = _fetch_vision(symbol, interval, days)
+        if not df.empty and len(df) > 100:
+            return df
+    except Exception:
+        pass
+    # ② Binance API（本地 + 代理）
+    try:
+        df = _fetch_klines_api(symbol, interval, days)
+        if not df.empty:
+            df.attrs["source"] = "binance-api"
+            return df
+    except Exception:
+        pass
+    # ③ OKX 兜底
+    try:
+        df = _fetch_okx(symbol, interval, days)
+        if not df.empty:
+            return df
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
+def _fetch_klines_api(symbol: str, interval: str, days: int) -> pd.DataFrame:
+    """原有 Binance API 分页拉取（451 地区会失败，作为本地/代理路径）。"""
     step = INTERVAL_MS[interval]
     now = int(time.time() * 1000)
     start = now - days * 86_400_000
     rows = []
     cur = start
     while cur < now:
-        params = {
-            "symbol": symbol, "interval": interval,
-            "startTime": cur, "limit": 1500,
-        }
+        params = {"symbol": symbol, "interval": interval, "startTime": cur, "limit": 1500}
+        r = None
         for attempt in range(4):
             try:
                 r = requests.get(f"{FAPI}/fapi/v1/klines", params=params, timeout=20)
                 if r.status_code == 200:
                     break
                 if r.status_code == 429:
-                    time.sleep(2 ** attempt)
-                    continue
+                    time.sleep(2 ** attempt); continue
                 raise RuntimeError(f"HTTP {r.status_code}: {r.text[:120]}")
             except Exception:
                 if attempt == 3:
@@ -241,6 +364,7 @@ def main() -> int:
             df.to_csv(f"data/{sym}_{a.interval}.csv", index=False)
             sig = fn(df)
             st = simulate(df, sig)
+            st["data_source"] = df.attrs.get("source", "unknown")
             st["first_bar"] = str(df["ts"].iloc[0])
             st["last_bar"] = str(df["ts"].iloc[-1])
             out["symbols"][sym] = st
